@@ -1,0 +1,10 @@
+[Auth Section]
+auth_type:      oAuth2
+#auth_type:     UserPass
+
+client_id:      952234119367-86ik00m2q8m70kgk8r32ulm45erqppi6.apps.googleusercontent.com
+client_secret:  -sd0iVee934lBoiR2ZeB84Z
+token_file:     ask4rank.dat
+
+login:          user@gmail.com
+password:       admin 

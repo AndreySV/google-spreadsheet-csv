@@ -11,10 +11,10 @@ google-spreadsheet-csv - Sync a google spreadsheet with a CSV file.
 **google-spreadsheet-csv** -h
 </P>
 <P>
-**google-spreadsheet-csv** [-v/<S>verbose] [-o/</S>output=&lt;file&gt;] get &lt;spreadsheet&gt; &lt;worksheet&gt;
+**google-spreadsheet-csv** config_file [-v/<S>verbose] [-o/</S>output=&lt;file&gt;] get &lt;spreadsheet&gt; &lt;worksheet&gt;
 </P>
 <P>
-**google-spreadsheet-csv** [-v/<S>verbose] [-i/</S>input=&lt;file&gt;] send &lt;spreadsheet&gt; &lt;worksheet&gt;
+**google-spreadsheet-csv** config_file [-v/<S>verbose] [-i/</S>input=&lt;file&gt;] send &lt;spreadsheet&gt; &lt;worksheet&gt;
 </P>
 
 <H1>DESCRIPTION</H1>
@@ -34,8 +34,10 @@ data in the CSV file is sent, and surplus data in the spreadsheet is
 removed.
 </P>
 <P>
-Username and password are found by looking for a machine named **google.com**
-in <I>~/.netrc</I>. See **netrc**(5) for more information.
+Authentication credential are found by looking for in **config_file**.
+Two google authentication methods are supported:
+- Login/Password method
+- OAuthPass2 method
 </P>
 
 <H1>OPTIONS</H1>
@@ -57,12 +59,12 @@ in <I>~/.netrc</I>. See **netrc**(5) for more information.
 
 <P>
 Written by <A HREF="http://lpenz.org">Leandro Penz</A>.
+Written by Andrey Skvortsov.
 </P>
 
 <H1>SEE ALSO</H1>
 
 <UL>
-<LI>**netrc**(5)
 <LI><A HREF="http://docs.google.com">http://docs.google.com</A>
 </UL>
 

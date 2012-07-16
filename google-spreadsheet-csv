@@ -1,25 +1,46 @@
 #!/usr/bin/python
+# vim: set fileencoding=UTF-8 :
+# 
+# changes
+# 	v 1.2	2012/06/14
+#	- fixed bug with non-latin column's names and 
+#         column's names contained spaces and some special symbols ('_')
+#		
+#	v 1.3	2012/06/20
+#	- added new google authentication method
+#	- new google library is used (gdata.spreadsheets.client)
+#   - configuration file is used
+#   - utf-8 can be used (need patch for core.py )
+
 
 try: 
   from xml.etree import ElementTree
 except ImportError:
   from elementtree import ElementTree
-import gdata.spreadsheet.service
-import gdata.service
+
+import ConfigParser
 import atom.service
-import gdata.spreadsheet
+import gdata.spreadsheets
+import gdata.spreadsheets.client
+import gdata.gauth
 import atom
 import os
 from optparse import OptionParser
-from netrc import netrc
 import csv
 import sys
+
 import codecs
 import locale
 import cStringIO
+import string
+
+from oauth2client.file import Storage
+from oauth2client.client import OAuth2WebServerFlow
+from oauth2client.tools import run
+
 
 PROGRAM_NAME = "google-spreadsheet-csv"
-PROGRAM_VERSION = "1.1"
+PROGRAM_VERSION = "1.3"
 
 __version__ = PROGRAM_VERSION
 
@@ -31,10 +52,16 @@ class Dprint(object):
     def __call__(self, s):
         if not self.enable:
             return
-        sys.stdout.write(s)
+	sys.stdout.write( to_utf8(s) )
 
 def eprint(s):
-    sys.stderr.write(s)
+    sys.stderr.write( to_utf8(s) )
+
+def to_utf8(s):
+    if type(s) is unicode:
+	s = s.encode('utf-8')
+    return s	
+
 
 # CSV missing stuff: #########################################################
 
@@ -104,179 +131,308 @@ class CSVUnicodeWriter:
         for row in rows:
             self.writerow(row)
 
-# Google connection: #########################################################
 
-def connect(config, doc, worksheet):
-    dprint = Dprint(config)
-    dprint('Connecting\n')
-    try:
-        f = open('/home/%s/.netrc' % os.environ['USER'])
-    except IOError:
-        eprint('could not open /home/%s/.netrc\n' % os.environ['USER'])
-        sys.exit(1)
-    else:
-        f.close()
-    auth = netrc().authenticators('google.com')
-    client = gdata.spreadsheet.service.SpreadsheetsService()
-    client.ClientLogin(auth[0], auth[2])
+class   google_spreadsheets_client( gdata.spreadsheets.client.SpreadsheetsClient ):
 
-    dprint('Getting docs\n')
-    feed = client.GetSpreadsheetsFeed()
-    sskey = None
-    for s in feed.entry:
-        if s.title.text != doc:
-            continue
-        sskey = s.id.text.rsplit('/',1)[1]
-        break
-    if sskey == None:
-        raise IOError, 'spreadsheet %s not found' % doc
+    def blank_row(self, entry):
+        for k in entry.to_dict().keys():
+            entry.set_value( k, '')
+        try:
+            self.update(entry)
+        except gdata.client.RequestError:
+            pass
 
-    dprint('Getting worksheets of %s\n' % doc)
-    wskey = None
-    for w in client.GetWorksheetsFeed(sskey).entry:
-        if w.title.text != worksheet:
-            continue
-        wskey = w.id.text.rsplit('/', 1)[1]
-        break
-    if wskey == None:
-        raise IOError, 'spreadsheet %s ok, worksheet %s not found' % (doc, worksheet)
-    return client, sskey, wskey
+    def insert_row(self, csvline, sskey, wskey):                                                                                                 
+        entry = gdata.spreadsheets.data.ListEntry()                                                                                                                   
+        entry.from_dict(csvline)
+        self.add_list_entry(entry, sskey , wskey )
+
+    def update_row(self, entry, csvline):
+        entry.from_dict( csvline )
+        self.update(entry) 
 
 
-def google_get_header(config, client, sskey, wskey):
-    dprint = Dprint(config)
-    dprint('Getting header\n')
-    cellfeed = client.GetCellsFeed(sskey, wskey)
-    fields = []
-    for c in cellfeed.entry:
-        if c.title.text[1:] != '1':
-            continue
-        fields.append(c.content.text.lower())
-    return fields
+class   google_spreadsheet_csv(object):
 
-# Get: #######################################################################
+    # class constants 
+    scopes     = ['https://docs.google.com/feeds/', 'https://spreadsheets.google.com/feeds/']
+    user_agent = 'google-spreadsheet-cmd/' + __version__
 
-def gss_get(config, doc, worksheet):
-    dprint = Dprint(config)
-    if config.input:
-        parser.error('invalid input argument')
-    if not config.output:
-        fdout = sys.stdout
-    else:
-        fdout = open(config.output, 'w')
-    csvout = CSVUnicodeWriter(fdout)
-    client, sskey, wskey = connect(config, doc, worksheet)
-    fields = google_get_header(config, client, sskey, wskey)
-    csvout.writerow(fields)
-    listfeed = client.GetListFeed(sskey, wskey)
-    t = len(listfeed.entry)
-    i = 0
-    for lf in listfeed.entry:
-        dprint('%03d/%03d: getting row\n' % (i, t))
-        i = i + 1
-        lu = [ lf.custom[f].text for f in fields ]
-        lt = []
-        for c in lu:
-            ct = c
-            if isinstance(c, type(None)):
-                ct = u''
-            lt.append(ct)
-        csvout.writerow(lt)
+    auth_types = { 
+        'oAuth2'  : 1, 
+        'UserPass': 2
+    }
 
-# Send: ######################################################################
+    def __init__(self, cfg_file_name, config):   
 
-def gss_send(config, doc, worksheet):
-    dprint = Dprint(config)
-    if config.output:
-        parser.error('invalid input argument')
-    if not config.input:
-        fdin = sys.input
-    else:
-        fdin = open(config.input, 'r')
-    csvin = CSVUnicodeReader(fdin)
-    client, sskey, wskey = connect(config, doc, worksheet)
-    fields = google_get_header(config, client, sskey, wskey)
-    found = set()
-    for l in csvin:
-        for c in l:
-            if not c in fields:
-                raise NameError, 'CSV field %s not found in spreadsheet; found fields: %s' % (c, ', '.join(fields))
-            found.add(c)
-        break
-    blankrow = {}
-    for f in fields:
-        blankrow[f] = ''
-        if f in found:
-            continue
-        raise NameError, 'spreadsheet field %s not found in CSV' % f
-    csvlines = []
-    for l in csvin:
-        newrow = {}
+        # Authorization can be requested for multiple APIs at once by specifying multiple scopes separated by # spaces.
+        self.config_cmd = config
+        self.read_config_file( cfg_file_name )
+
+
+    def read_config_file(self, filename):
+        config_file = ConfigParser.ConfigParser()
+        config_file.read(filename)
+
+        auth_type = config_file.get('Auth Section', 'auth_type')
+        if not self.auth_types.has_key( auth_type ):
+            raise NameError, 'unknown auth_type value (%s) in config file %s ' % auth_type, filename  
+        self.auth_type = self.auth_types[ auth_type ]
+
+        if self.auth_type == self.auth_types['oAuth2']:
+            self.client_id     = config_file.get('Auth Section', 'client_id')
+            self.client_secret = config_file.get('Auth Section', 'client_secret')
+            self.token_file    = config_file.get('Auth Section', 'token_file')
+
+        if self.auth_type == self.auth_types['UserPass']:
+            self.login    =  config_file.get('Auth Section', 'login')
+            self.password =  config_file.get('Auth Section', 'password')
+
+
+    # Set up a Flow object to be used if we need to authenticate. This
+    # sample uses OAuth 2.0, and we set up the OAuth2WebServerFlow with
+    # the information it needs to authenticate. Note that it is called
+    # the Web Server Flow, but it can also handle the flow for native
+    # applications <http://code.google.com/apis/accounts/docs/OAuth2.html#IA>
+    # The client_id client_secret are copied from the API Access tab on
+    # the Google APIs Console <http://code.google.com/apis/console>. When
+    # creating credentials for this application be sure to choose an Application
+    # type of "Installed application".
+
+    def authenticate_oauth2(self, client):
+        dprint = Dprint(self.config_cmd)
+        dprint('Connecting using auth2 token\n')
+
+        # Save the token for later use.
+        token = gdata.gauth.OAuth2Token( 
+                client_id       = self.client_id, 
+                client_secret   = self.client_secret, 
+                scope           = self.scopes, 
+                user_agent      = self.user_agent)
+
+        storage = Storage(self.token_file)
+        credentials = storage.get()
+
+        if credentials is None or credentials.invalid == True:
+            flow = OAuth2WebServerFlow(
+                client_id       = self.client_id,
+                client_secret   = self.client_secret,
+                scope           = self.scopes,
+                user_agent      = self.user_agent
+                )
+            credentials = run(flow, storage)
+
+        token.token_uri    = credentials.token_uri
+        token.access_token = credentials.access_token
+        token.refresh_token= credentials.refresh_token
+
+        client = token.authorize(client)
+        return client
+
+    def authenticate_client_login(self, client):
+        dprint = Dprint(self.config_cmd)
+        dprint('Connecting via Client Login \n')
+
+        client.ClientLogin( self.login, self.password, self.user_agent)
+        return client
+
+
+
+    def authenticate(self, client):
+        if self.auth_type == self.auth_types['oAuth2']:
+            client = self.authenticate_oauth2( client )
+        if self.auth_type == self.auth_types['UserPass']:
+            client = self.authenticate_client_login( client )
+        return client
+
+
+    def connect(self, doc, worksheet):
+        dprint = Dprint(self.config_cmd)
+        client = google_spreadsheets_client() 
+        client = self.authenticate(client)
+
+        dprint('Getting docs\n')
+        feed = client.GetSpreadsheets()
+        sskey = None
+        for s in feed.entry:
+            if s.title.text != doc:
+                continue
+            sskey = s.id.text.rsplit('/',1)[1]
+            break
+        if sskey == None:
+            raise IOError, 'spreadsheet %s not found' % doc
+
+        dprint('Getting worksheets of %s\n' % doc)
+        wskey = None
+        for w in client.GetWorksheets(sskey).entry:
+            if w.title.text != worksheet:
+                continue
+            wskey = w.id.text.rsplit('/', 1)[1]
+            break
+
+        if wskey == None:
+            raise IOError, 'spreadsheet %s ok, worksheet %s not found' % (doc, worksheet)
+
+        return client, sskey, wskey 
+
+
+    def dict_for_header(self,titles):
+        column_headers = {}
+        number = ord('A')
+        for t in titles:
+            column_headers[ chr(number) ] = t
+            number = number + 1
+            if number>ord('Z'):
+                break 
+        return column_headers
+
+
+    def google_get_header(self, client, sskey, wskey):
+        dprint = Dprint(self.config_cmd)
+        dprint('Getting header\n')
+        cellfeed = client.GetCells(sskey, wskey)
+        fields = []
+        for c in cellfeed.entry:
+            if c.title.text[1:] != '1':
+                continue
+            fields.append(c.content.text)
+        return fields
+
+
+    def titles_to_dict_keys(self, titles):
+        keys = [ t.lower() for t in titles]
+
+        keys = [ k.replace(u' ', u'')for k in keys]
+        keys = [ k.replace(u'_', u'')for k in keys]
+        return keys 
+
+
+
+#   Get: #######################################################################
+
+    def get(self, doc, worksheet):
+        dprint = Dprint(self.config_cmd)
+        if not self.config_cmd.output:
+            fdout = sys.stdout
+        else:
+            fdout = open(self.config_cmd.output, 'w')
+        csvout = CSVUnicodeWriter(fdout)
+        client, sskey, wskey = self.connect( doc, worksheet)
+        fields = self.google_get_header(client, sskey, wskey)
+        csvout.writerow(fields)
+
+        keys = self.titles_to_dict_keys(fields) 
+        listfeed = client.GetListFeed(sskey, wskey)
+        t = len(listfeed.entry)
         i = 0
-        for f in fields:
-            if i > len(l):
-                raise NameError, 'row has less columns than header (%d < %d):\n%s' % (i, len(fields), l)
-            newrow[f] = l[i]
+        for lf in listfeed.entry:
+            dprint('%03d/%03d: getting row\n' % (i, t))
             i = i + 1
-        csvlines.append(newrow)
-    listfeed = client.GetListFeed(sskey, wskey)
-    i = 0
-    tgss = len(listfeed.entry)
-    tcsv = len(csvlines)
-    t = max(tgss, tcsv)
-    while i < tgss and i < tcsv:
-        skip = True
-        diff = None
-        for f in fields:
-            f1 = csvlines[i][f]
-            f2 = unicode(listfeed.entry[i].custom[f].text)
-            if f2 == u'None':
-                f2 = u''
-            if f1 != f2:
-                skip = False
-                diff = f
-                break
-        if not skip:
-            dprint('%03d/%03d: update, field %s differs; %s != %s\n' % (i+1, t, diff, f1, f2))
-            client.UpdateRow(listfeed.entry[i], csvlines[i])
-        else:
-            dprint('%03d/%03d: contents are the same, skip\n' % (i+1, t))
-        i = i + 1
-    ig0 = i
-    while i < tcsv:
-        dprint('%03d/%03d: insert\n' % (i+1, t))
-        client.InsertRow(csvlines[i], sskey, wskey)
-        i = i + 1
-    ig0 = i
-    while i < tgss:
-        if config.blank:
-            dprint('%03d/%03d: blank\n' % (i+1, t))
-            try:
-                client.UpdateRow(listfeed.entry[len(listfeed.entry) - (i - ig0) - 1], blankrow)
-            except gdata.service.RequestError:
-                pass
-        else:
-            dprint('%03d/%03d: delete\n' % (i+1, t))
-            client.DeleteRow(listfeed.entry[len(listfeed.entry) - (i - ig0) - 1])
-        i = i + 1
+            lu = [ lf.get_value(f) for f in keys ]
+            lt = []
+            for c in lu:
+                ct = c
+                if isinstance(c, type(None)):
+                    ct = u''
+                lt.append(ct)
+            csvout.writerow(lt)
+        return
 
-# Main: ######################################################################
 
-def main():
-    parser = OptionParser(usage='''\
+#   Send: #######################################################################
+
+    def check_csv_and_spreadsheet_fields(self, server_head, csv_head ):
+        found = set()
+        for c in csv_head:
+            if not c in server_head:
+                msg = 'CSV field %s not found in spreadsheet; found fields: %s' % (c, ', '.join(server_head))
+                raise NameError( to_utf8(msg) )
+            found.add(c)
+
+        for f in server_head:
+            if not f in found:
+                raise NameError, 'spreadsheet field not found in CSV' % to_utf8( f )
+
+        return 
+
+    def send(self, doc, worksheet ):
+        dprint = Dprint(self.config_cmd)
+        if not self.config_cmd.input:
+            fdin = sys.input
+        else:
+            fdin = open(self.config_cmd.input, 'r')
+
+        csvin       = CSVUnicodeReader(fdin)
+
+        client, sskey, wskey = self.connect( doc, worksheet )
+        fields = self.google_get_header( client, sskey, wskey )
+        self.check_csv_and_spreadsheet_fields( fields, csvin.next() )
+        keys  = self.titles_to_dict_keys(fields) 
+
+        csvlines = []
+        for l in csvin:
+            newrow = {}
+            i = 0
+            for f in keys:
+                if i > len(l):
+                    raise NameError, 'row has less columns than header (%d < %d):\n%s' % (i, len(fields), to_utf8( l ))
+                newrow[f] = l[i]
+                i = i + 1
+            csvlines.append(newrow)
+        listfeed = client.GetListFeed(sskey, wskey)
+        i = 0
+        tgss = len(listfeed.entry)
+        tcsv = len(csvlines)
+        t = max(tgss, tcsv)
+        while i < tgss and i < tcsv:
+            skip = True
+            diff = None
+            for f in keys:
+                f1 = csvlines[i][f]
+                f2 = unicode(listfeed.entry[i].get_value(f))
+                if f2 == u'None':
+                    f2 = u''
+                if f1 != f2:
+                    skip = False
+                    diff = f
+                    break
+            if not skip:
+                dprint('%03d/%03d: update, field %s differs; %s != %s\n' % (i+1, t, diff, f1, f2))
+                client.update_row(listfeed.entry[i], csvlines[i])
+            else:
+                dprint('%03d/%03d: contents are the same, skip\n' % (i+1, t))
+            i = i + 1
+        ig0 = i
+        while i < tcsv:
+            dprint('%03d/%03d: insert\n' % (i+1, t))
+            client.insert_row(csvlines[i], sskey, wskey)
+            i = i + 1
+        ig0 = i
+        while i < tgss:
+            if self.config_cmd.blank:
+                dprint('%03d/%03d: blank\n' % (i+1, t))
+                client.blank_row( listfeed.entry[len(listfeed.entry) - (i - ig0) - 1] )
+            else:
+                dprint('%03d/%03d: delete\n' % (i+1, t))
+                client.delete(listfeed.entry[len(listfeed.entry) - (i - ig0) - 1])
+            i = i + 1
+
+        return
+    
+
+def parser_config():
+
+    usage = '''\
 Usage: %prog [-h]
-       %prog [-v] [-i <input>] <send> <doc> <worksheet>
-       %prog [-v] [-o <output>] <get> <doc> <worksheet>\
-''',
-                          version="%prog "+__version__,
-                          description='''\
+       %prog <cfg_file> [-v] [-i <input>] <send> <doc> <worksheet>
+       %prog <cfg_file> [-v] [-o <output>] <get> <doc> <worksheet>\
+'''
+    desc = '''\
 google-spreadsheet-csv is a program used to sync or get data from a google
 spreadsheet. It interfaces locally with CSV files.
-
-User and password can be passed on the command line or by creating a google.com
-machine in ~/.netrc, see netrc(5).
 '''
-                        )
+
+    parser = OptionParser(usage= usage, version="%prog "+__version__, description= desc  )
     parser.add_option("-v", "--verbose", dest="verbose",
                       action="store_true", default=False,
                       help="Be verbose.")
@@ -287,17 +443,34 @@ machine in ~/.netrc, see netrc(5).
     parser.add_option("-b", "--blank-rows", dest="blank",
                       action="store_true", default=False,
                       help="Blank surplus rows in spreadsheet instead of deleting them.")
+    return parser
+
+def parse_cmd_params():
+    parser = parser_config()
     (config, args) = parser.parse_args()
-    if len(args) != 3:
+    if len(args) != 4:
         parser.error('expected arguments not found')
     cmds = {
-            'get' : gss_get,
-            'send' : gss_send,
+            'get' : 'gss_get',
+            'send' : 'gss_send',
             }
-    if not cmds.has_key(args[0]):
+    if not cmds.has_key(args[1]):
         parser.error('command must be one of: %s' % ', '.join(cmds.keys()))
-    cmds[args[0]](config, args[1], args[2])
+       
+    if args[1]=='send' and config.output:
+        parser.error('invalid input argument')
 
+    if args[1]=='get' and config.input:
+        parser.error('invalid input argument')
+
+    return (config, args)
+
+# Main: ######################################################################
+
+def main():
+    (config, args) = parse_cmd_params()
+    process = google_spreadsheet_csv( args[0], config )
+    getattr(process,args[1])( args[2], args[3])
 
 if __name__ == '__main__':
     main()

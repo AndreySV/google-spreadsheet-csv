@@ -1,0 +1,15 @@
+--- /usr/local/lib/python2.7/dist-packages/atom/core.py_old	2012-06-27 16:42:36.627780827 +0300
++++ /usr/local/lib/python2.7/dist-packages/atom/core.py	    2012-06-27 16:42:28.995780322 +0300
+@@ -346,10 +346,10 @@
+       else:
+         tree.text = self.text.decode(encoding)
+ 
+-  def to_string(self, version=1, encoding=None, pretty_print=None):
++  def to_string(self, version=1, encoding=STRING_ENCODING, pretty_print=None):
+     """Converts this object to XML."""
+ 
+-    tree_string = ElementTree.tostring(self._to_tree(version, encoding))
++    tree_string = ElementTree.tostring(self._to_tree(version, encoding), encoding)
+ 
+     if pretty_print and xmlString is not None:
+         return xmlString(tree_string).toprettyxml()

@@ -12,9 +12,9 @@ google-spreadsheet-csv - Sync a google spreadsheet with a CSV file.
 
 **google-spreadsheet-csv** -h
 
-**google-spreadsheet-csv** [-v/--verbose] [-o/--output=<file>] get <spreadsheet> <worksheet>
+**google-spreadsheet-csv** <config_file> [-v/--verbose] [-o/--output=<file>] get <spreadsheet> <worksheet>
 
-**google-spreadsheet-csv** [-v/--verbose] [-i/--input=<file>] [-b] send <spreadsheet> <worksheet>
+**google-spreadsheet-csv** <config_file> [-v/--verbose] [-i/--input=<file>] [-b] send <spreadsheet> <worksheet>
 
 
 
@@ -31,8 +31,10 @@ Otherwise, the operation is aborted and an error is reported. After that, the
 data in the CSV file is sent, and surplus data in the spreadsheet is
 removed.
 
-Username and password are found by looking for a machine named **google.com**
-in //~/.netrc//. See **netrc**(5) for more information.
+Authentication credential are found by looking for in **config_file**.
+Two google authentication methods are supported:
+- Login/Password method
+- OAuthPass2 method
 
 
 
@@ -53,12 +55,11 @@ in //~/.netrc//. See **netrc**(5) for more information.
 = AUTHORS =
 
 Written by [Leandro Penz http://lpenz.org].
-
+Written by [Andrey Skvortsov].
 
 
 = SEE ALSO =
 
-- **netrc**(5)
 - http://docs.google.com
 
 
